@@ -8,20 +8,20 @@ impl Sudoku {
         Self([Default::default(); 81])
     }
 
-    pub fn get(&self, x: usize, y: usize) -> &Cell {
+    pub fn get(&self, x: usize, y: usize) -> Option<&Cell> {
         let i = x * 9 + y;
-        &self.0[i]
+        self.0.get(i)
     }
 
-    pub fn get_mut(&mut self, x: usize, y: usize) -> &mut Cell {
+    pub fn get_mut(&mut self, x: usize, y: usize) -> Option<&mut Cell> {
         let i = x * 9 + y;
-        &mut self.0[i]
+        self.0.get_mut(i)
     }
 
     fn validate_group(&self, iter: impl Iterator<Item = (usize, usize)>) -> bool {
         let mut check = 0;
         for (x, y) in iter {
-            let cell = self.get(x, y);
+            let cell = self.get(x, y).unwrap();
             if !cell.is_final() {
                 return false;
             }
@@ -40,6 +40,22 @@ impl Sudoku {
             }
         }
         true
+    }
+
+    pub fn rows_mut<'a>(
+        &'a mut self,
+    ) -> impl Iterator<Item = impl Iterator<Item = &'a mut Cell> + 'a> + 'a {
+        let mut cells: Vec<Option<&mut Cell>> = SudokuIterMut {
+            sudoku: self,
+            indices: (0..9).map(row_iter).flatten(),
+        }
+        .map(|c| Some(c))
+        .collect();
+        let cells: Vec<Vec<Option<&mut Cell>>> = cells
+            .chunks_mut(9)
+            .map(|chunk| chunk.into_iter().map(|e| e.take()).collect::<Vec<_>>())
+            .collect();
+        cells.into_iter().map(|v| v.into_iter().map(|e| e.unwrap()))
     }
 }
 
@@ -61,6 +77,27 @@ fn block_iter(block: usize) -> impl Iterator<Item = (usize, usize)> {
         .map(move |(x, y)| (x + offset.0, y + offset.1))
 }
 
+pub struct SudokuIterMut<'a, I> {
+    sudoku: &'a mut Sudoku,
+    indices: I,
+}
+
+impl<'a, I: Iterator<Item = (usize, usize)>> Iterator for SudokuIterMut<'a, I> {
+    type Item = &'a mut Cell;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((x, y)) = self.indices.next() {
+            if let Some(cell) = self.sudoku.get_mut(x, y) {
+                Some(unsafe { &mut *(cell as *mut _) })
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+}
+
 impl Default for Sudoku {
     fn default() -> Self {
         Self::new()
@@ -75,7 +112,7 @@ impl std::str::FromStr for Sudoku {
         for (x, row) in string.split('\n').enumerate() {
             for (y, c) in row.chars().enumerate() {
                 let value = c.to_string().parse()?;
-                sudoku.get_mut(x, y).set(value);
+                sudoku.get_mut(x, y).unwrap().set(value);
             }
         }
         Ok(sudoku)
@@ -86,7 +123,7 @@ impl std::fmt::Display for Sudoku {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         for x in 0..9 {
             for y in 0..9 {
-                write!(f, "{}", self.get(x, y))?;
+                write!(f, "{}", self.get(x, y).unwrap())?;
             }
             write!(f, "\n")?;
         }
