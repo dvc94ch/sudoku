@@ -1,62 +1,80 @@
-use std::num::ParseIntError;
-use thiserror::Error;
+use anyhow::Result;
 
-pub struct Sudoku([Cell; 81]);
+#[derive(Clone, Copy)]
+pub struct Sudoku {
+    cells: [Value; 81],
+}
 
 impl Sudoku {
     pub fn new() -> Self {
-        Self([Default::default(); 81])
-    }
-
-    pub fn get(&self, x: usize, y: usize) -> Option<&Cell> {
-        let i = x * 9 + y;
-        self.0.get(i)
-    }
-
-    pub fn get_mut(&mut self, x: usize, y: usize) -> Option<&mut Cell> {
-        let i = x * 9 + y;
-        self.0.get_mut(i)
-    }
-
-    fn validate_group(&self, iter: impl Iterator<Item = (usize, usize)>) -> bool {
-        let mut check = 0;
-        for (x, y) in iter {
-            let cell = self.get(x, y).unwrap();
-            if !cell.is_final() {
-                return false;
-            }
-            check |= cell.0
+        Self {
+            cells: [Default::default(); 81],
         }
-        check == 0b1_1111_1111
+    }
+
+    pub fn get(&self, x: usize, y: usize) -> Value {
+        let i = x * 9 + y;
+        self.cells[i]
+    }
+
+    pub fn set(&mut self, x: usize, y: usize, value: Value) {
+        let i = x * 9 + y;
+        self.cells[i] = value;
+    }
+
+    fn validate_group(&self, iter: impl Iterator<Item = (usize, usize)>) -> Solution {
+        let mut values = [false; 10];
+        for (x, y) in iter {
+            let value = self.get(x, y);
+            let index = value.value() as usize;
+            if value.is_final() && values[index] {
+                return Solution::Invalid;
+            }
+            values[index] = true;
+        }
+        if values[0] {
+            Solution::Incomplete
+        } else {
+            Solution::Valid
+        }
+    }
+
+    fn validate(&self) -> Solution {
+        let mut incomplete = false;
+        for i in 0..9 {
+            match self.validate_group(row_iter(i)) {
+                Solution::Invalid => return Solution::Invalid,
+                Solution::Incomplete => incomplete = true,
+                _ => {}
+            }
+            match self.validate_group(col_iter(i)) {
+                Solution::Invalid => return Solution::Invalid,
+                Solution::Incomplete => incomplete = true,
+                _ => {}
+            }
+            match self.validate_group(block_iter(i)) {
+                Solution::Invalid => return Solution::Invalid,
+                Solution::Incomplete => incomplete = true,
+                _ => {}
+            }
+        }
+        if incomplete {
+            Solution::Incomplete
+        } else {
+            Solution::Valid
+        }
     }
 
     pub fn valid(&self) -> bool {
-        for i in 0..9 {
-            let row = self.validate_group(row_iter(i));
-            let col = self.validate_group(col_iter(i));
-            let block = self.validate_group(block_iter(i));
-            if !(row && col && block) {
-                return false;
-            }
-        }
-        true
+        self.validate() == Solution::Valid
     }
+}
 
-    pub fn rows_mut<'a>(
-        &'a mut self,
-    ) -> impl Iterator<Item = impl Iterator<Item = &'a mut Cell> + 'a> + 'a {
-        let mut cells: Vec<Option<&mut Cell>> = SudokuIterMut {
-            sudoku: self,
-            indices: (0..9).map(row_iter).flatten(),
-        }
-        .map(|c| Some(c))
-        .collect();
-        let cells: Vec<Vec<Option<&mut Cell>>> = cells
-            .chunks_mut(9)
-            .map(|chunk| chunk.into_iter().map(|e| e.take()).collect::<Vec<_>>())
-            .collect();
-        cells.into_iter().map(|v| v.into_iter().map(|e| e.unwrap()))
-    }
+#[derive(Debug, Eq, PartialEq)]
+pub enum Solution {
+    Valid,
+    Invalid,
+    Incomplete,
 }
 
 fn row_iter(row: usize) -> impl Iterator<Item = (usize, usize)> {
@@ -69,33 +87,11 @@ fn col_iter(col: usize) -> impl Iterator<Item = (usize, usize)> {
 
 fn block_iter(block: usize) -> impl Iterator<Item = (usize, usize)> {
     let offset = ((block % 3) * 3, (block / 3) * 3);
-    std::iter::once(0)
-        .cycle()
+    std::iter::repeat(0)
         .zip(0..3)
-        .chain(std::iter::once(1).cycle().zip(0..3))
-        .chain(std::iter::once(2).cycle().zip(0..3))
+        .chain(std::iter::repeat(1).zip(0..3))
+        .chain(std::iter::repeat(2).zip(0..3))
         .map(move |(x, y)| (x + offset.0, y + offset.1))
-}
-
-pub struct SudokuIterMut<'a, I> {
-    sudoku: &'a mut Sudoku,
-    indices: I,
-}
-
-impl<'a, I: Iterator<Item = (usize, usize)>> Iterator for SudokuIterMut<'a, I> {
-    type Item = &'a mut Cell;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some((x, y)) = self.indices.next() {
-            if let Some(cell) = self.sudoku.get_mut(x, y) {
-                Some(unsafe { &mut *(cell as *mut _) })
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
 }
 
 impl Default for Sudoku {
@@ -105,14 +101,17 @@ impl Default for Sudoku {
 }
 
 impl std::str::FromStr for Sudoku {
-    type Err = Error;
+    type Err = anyhow::Error;
 
     fn from_str(string: &str) -> Result<Self, Self::Err> {
         let mut sudoku = Sudoku::new();
         for (x, row) in string.split('\n').enumerate() {
             for (y, c) in row.chars().enumerate() {
-                let value = c.to_string().parse()?;
-                sudoku.get_mut(x, y).unwrap().set(value);
+                if c == ' ' {
+                    continue;
+                }
+                let cell = c.to_string().parse()?;
+                sudoku.set(x, y, cell);
             }
         }
         Ok(sudoku)
@@ -123,7 +122,7 @@ impl std::fmt::Display for Sudoku {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         for x in 0..9 {
             for y in 0..9 {
-                write!(f, "{}", self.get(x, y).unwrap())?;
+                write!(f, "{}", self.get(x, y))?;
             }
             write!(f, "\n")?;
         }
@@ -132,143 +131,83 @@ impl std::fmt::Display for Sudoku {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Cell(u16);
+pub struct Value(u8);
 
-impl Cell {
-    pub fn new() -> Self {
-        Self(0b1_1111_1111)
+impl Value {
+    pub fn new(value: u8) -> Result<Self> {
+        if value > 9 {
+            anyhow::bail!("invalid value");
+        }
+        Ok(Self(value))
     }
 
     pub fn is_final(&self) -> bool {
-        self.0 & (self.0 - 1) == 0
+        self.0 > 0
     }
 
-    pub fn set(&mut self, value: Value) {
-        self.0 = value.mask();
-    }
-
-    pub fn contains(&self, value: Value) -> bool {
-        self.0 & value.mask() != 0
-    }
-
-    pub fn remove(&mut self, value: Value) {
-        if !self.is_final() {
-            self.0 &= !value.mask();
-        }
-    }
-
-    pub fn value(&self) -> Option<Value> {
-        if !self.is_final() {
-            return None;
-        }
-        let n = match self.0 {
-            1 => 1,
-            2 => 2,
-            4 => 3,
-            8 => 4,
-            16 => 5,
-            32 => 6,
-            64 => 7,
-            128 => 8,
-            256 => 9,
-            _ => return None,
-        };
-        Some(Value::new(n).expect("valid value; qed"))
+    pub fn value(self) -> u8 {
+        self.0
     }
 }
 
-impl Default for Cell {
+impl Default for Value {
     fn default() -> Self {
-        Self::new()
+        Self::new(0).unwrap()
     }
 }
 
-impl std::str::FromStr for Cell {
-    type Err = Error;
+impl std::str::FromStr for Value {
+    type Err = anyhow::Error;
 
     fn from_str(string: &str) -> Result<Self, Self::Err> {
-        let mut cell = Self::new();
         if string == " " {
-            return Ok(cell);
+            return Ok(Self::default());
+        } else {
+            let value = string.parse()?;
+            if value == 0 {
+                anyhow::bail!("value out of range");
+            }
+            Self::new(value)
         }
-        let value: Value = string.parse()?;
-        cell.set(value);
-        Ok(cell)
     }
 }
 
-impl std::fmt::Display for Cell {
+impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        if let Some(value) = self.value() {
-            write!(f, "{}", value)
+        if self.is_final() {
+            write!(f, "{}", self.value())
         } else {
             write!(f, " ")
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Value(u8);
-
-impl Value {
-    pub fn new(value: u8) -> Result<Self, Error> {
-        if value >= 1 && value <= 9 {
-            Ok(Self(value - 1))
-        } else {
-            Err(Error::ValueOutOfRange)
+fn backtrack(root: Sudoku, mut level: usize) -> Option<Sudoku> {
+    match root.validate() {
+        Solution::Valid => return Some(root),
+        Solution::Invalid => return None,
+        Solution::Incomplete => {}
+    }
+    while root.cells[level].is_final() {
+        level += 1;
+    }
+    for v in 1..=9 {
+        let mut candidate = root;
+        candidate.cells[level] = Value::new(v).unwrap();
+        if let Some(solution) = backtrack(candidate, level + 1) {
+            return Some(solution);
         }
     }
-
-    pub fn mask(&self) -> u16 {
-        0b1 << self.0
-    }
+    None
 }
 
-impl std::str::FromStr for Value {
-    type Err = Error;
-
-    fn from_str(string: &str) -> Result<Self, Self::Err> {
-        Self::new(string.parse()?)
-    }
-}
-
-impl std::fmt::Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.0 + 1)
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("value out of range")]
-    ValueOutOfRange,
-    #[error(transparent)]
-    ParseInt(#[from] ParseIntError),
+pub fn solve(sudoku: Sudoku) -> Option<Sudoku> {
+    backtrack(sudoku, 0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_cell() {
-        let mut cell = Cell::new();
-        for i in 2..=9 {
-            let value = Value::new(i).unwrap();
-            assert!(!cell.is_final());
-            assert!(cell.value().is_none());
-            assert!(cell.contains(value));
-            cell.remove(value);
-            assert!(!cell.contains(value));
-        }
-        assert!(cell.is_final());
-        assert_eq!(cell.value(), Some(Value::new(1).unwrap()));
-
-        let mut cell = Cell::new();
-        cell.set(Value::new(3).unwrap());
-        assert!(cell.is_final());
-        assert_eq!(cell.value(), Some(Value::new(3).unwrap()));
-    }
 
     #[test]
     fn test_block_iter() {
@@ -304,5 +243,23 @@ mod tests {
             .unwrap();
         println!("{}", sudoku);
         assert!(sudoku.valid());
+    }
+
+    #[test]
+    fn test_solve_sudoku() {
+        let sudoku: Sudoku = "53  7    \n\
+             6  195   \n \
+              98    6 \n\
+             8   6   3\n\
+             4  8 3  1\n\
+             7   2   6\n \
+              6    28 \n   \
+                419  5\n    \
+                 8  79"
+            .parse()
+            .unwrap();
+        let solution = solve(sudoku).expect("unsat");
+        println!("{}", solution);
+        assert!(solution.valid());
     }
 }
